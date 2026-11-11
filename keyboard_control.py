@@ -1,21 +1,23 @@
-"""tellolink ile klavyeden uçurma: canlı görüntü, ayarlanabilir hızlar, takla ve canlı veri paneli.
+# Copyright 2026 batoddy
+# Licensed under the Apache License, Version 2.0 (see LICENSE).
+"""Fly with tellolink from the keyboard: live video, adjustable speeds, flips and a live data panel.
 
-Çalıştırma (bilgisayar drone'un Wi-Fi ağına bağlıyken):
+Usage (with the computer connected to the drone's Wi-Fi network):
     python tellolink/keyboard_control.py
-    python tellolink/keyboard_control.py --speed 0.4 --vertical 0.3 --turn 0.5   # başlangıç hızları
+    python tellolink/keyboard_control.py --speed 0.4 --vertical 0.3 --turn 0.5   # initial speeds
 
-Tuşlar:
-    T          kalkış                    L        iniş
-    W / S      ileri / geri              A / D    sola / sağa kay
-    ↑ / ↓      yüksel / alçal            ← / →    sola / sağa dön
-    Boşluk     basılıyken dur (havada asılı kal)
-    F          takla (W/A/S/D basılıysa o yöne, değilse öne)
-    1 / 2      hareket hızı − / +        3 / 4    yükselme hızı − / +
-    5 / 6      dönüş hızı − / +
-    I          veri panelini aç / kapat
-    ESC        in ve çık (pencereyi kapatmak da aynı)
+Keys:
+    T          take off                  L        land
+    W / S      forward / back            A / D    strafe left / right
+    ↑ / ↓      rise / descend            ← / →    turn left / right
+    Space      while held, stop (hover in place)
+    F          flip (toward W/A/S/D if held, otherwise forward)
+    1 / 2      move speed − / +          3 / 4    climb speed − / +
+    5 / 6      turn speed − / +
+    I          show / hide the data panel
+    ESC        land and quit (closing the window does the same)
 
-Gereksinim: pip install pygame av numpy
+Requirements: pip install pygame av numpy
 """
 import argparse
 import math
@@ -25,13 +27,13 @@ import time
 
 import pygame
 
-# Doğrudan dosya olarak çalıştırılınca da tellolink bulunsun (proje kökünü yola ekle).
+# Make tellolink importable when run directly as a file (add the project root to the path).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tellolink import Tello
 
 VIDEO = (960, 720)
 PANEL_WIDTH = 400
-FOOTER_HEIGHT = 48      # pencerenin altındaki tuş listesi
+FOOTER_HEIGHT = 48      # key list at the bottom of the window
 CONTROLS = [
     'T takeoff   L land   ESC land & quit   Space stop   F flip (+W/A/S/D: direction)',
     'W/S forward/back   A/D left/right   Up/Down rise/descend   Left/Right turn',
@@ -40,9 +42,9 @@ CONTROLS = [
 FPS = 30
 SPEED_STEP = 0.1
 SPEED_MIN, SPEED_MAX = 0.1, 1.0
-STALE = 2.0             # bu kadar saniyedir yenilenmeyen veri panelde gri gösterilir
+STALE = 2.0             # data not refreshed for this many seconds is shown gray in the panel
 
-# Hız tuşları: tuş -> (hangi hız, değişim)
+# Speed keys: key -> (which speed, change)
 SPEED_KEYS = {
     pygame.K_1: ('speed', -SPEED_STEP), pygame.K_2: ('speed', +SPEED_STEP),
     pygame.K_3: ('vertical', -SPEED_STEP), pygame.K_4: ('vertical', +SPEED_STEP),
@@ -51,7 +53,7 @@ SPEED_KEYS = {
 
 
 def sticks_from_keys(pressed, speeds):
-    """Basılı tuşlardan çubuk değerleri: (pitch, roll, yaw, throttle)."""
+    """Stick values from the pressed keys: (pitch, roll, yaw, throttle)."""
     if pressed[pygame.K_SPACE]:
         return 0.0, 0.0, 0.0, 0.0
     pitch = (pressed[pygame.K_w] - pressed[pygame.K_s]) * speeds['speed']
@@ -62,7 +64,7 @@ def sticks_from_keys(pressed, speeds):
 
 
 def flip_direction(pressed):
-    """F'ye basılırken tutulan yön tuşlarından takla yönü; hiçbiri yoksa öne."""
+    """Flip direction from the direction keys held while F is pressed; forward if none."""
     fwd = 'forward' if pressed[pygame.K_w] else 'back' if pressed[pygame.K_s] else ''
     side = 'left' if pressed[pygame.K_a] else 'right' if pressed[pygame.K_d] else ''
     if fwd and side:
@@ -71,7 +73,7 @@ def flip_direction(pressed):
 
 
 def euler_deg(imu):
-    """IMU kuaterniyonundan (roll, pitch, yaw) derece. Drone'un kendi açılarıyla (osd) 0.1° içinde aynı."""
+    """(roll, pitch, yaw) in degrees from the IMU quaternion. Within 0.1° of the drone's own angles (osd)."""
     w, x, y, z = imu.q0, imu.q1, imu.q2, imu.q3
     roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
     pitch = math.asin(max(-1.0, min(1.0, 2 * (w * y - z * x))))
@@ -80,7 +82,7 @@ def euler_deg(imu):
 
 
 def body_velocity(imu, vx, vy):
-    """Dünya eksenindeki yatay hızı gövdeye çevirir: (ileri, sağa). Hızlar yaw 0° yönüne göre gelir."""
+    """Converts the horizontal velocity from the world frame to the body frame: (forward, right). Velocities are relative to the yaw 0° direction."""
     yaw = math.radians(euler_deg(imu)[2])
     return math.cos(yaw) * vx + math.sin(yaw) * vy, -math.sin(yaw) * vx + math.cos(yaw) * vy
 
@@ -90,7 +92,7 @@ def xyz(a, b, c, fmt='{:+.2f}'):
 
 
 def top_lines(drone, speeds):
-    """Görüntünün üstündeki satırlar: bağlantı, pil, yükseklik, hızlar."""
+    """Lines at the top of the video: connection, battery, height, speeds."""
     speed_line = f"Speed {speeds['speed']:.1f}  Vertical {speeds['vertical']:.1f}  Turn {speeds['turn']:.1f}   (1-6 to change)"
     if not drone.connected:
         return ['Connecting to Tello... (is this computer on the Tello Wi-Fi?)', speed_line]
@@ -107,7 +109,7 @@ def top_lines(drone, speeds):
 
 
 def panel_sections(drone):
-    """Sağ paneldeki bölümler: (başlık, kayıt, satırlar). Kayıt, eskiyse gri göstermek için."""
+    """Sections of the right panel: (title, record, lines). The record is used to show stale data in gray."""
     out = []
     imu = drone.imu
     if imu:
@@ -167,7 +169,7 @@ def draw_panel(screen, rect, drone, font, small):
 
 
 def draw_controls(screen, tiny):
-    """Pencerenin altına tuş listesini küçük yazıyla yazar."""
+    """Draws the key list in small text at the bottom of the window."""
     top = VIDEO[1]
     pygame.draw.rect(screen, (30, 30, 30), (0, top, screen.get_width(), FOOTER_HEIGHT))
     for i, line in enumerate(CONTROLS):
@@ -194,7 +196,7 @@ def main():
     drone = Tello()
     print('Connecting to Tello...')
     try:
-        drone.connect(timeout=0)       # beklemeden dön; bağlantı arka planda kurulur
+        drone.connect(timeout=0)       # return without waiting; the connection is made in the background
     except TimeoutError:
         pass
     except OSError as e:
@@ -236,13 +238,13 @@ def main():
                 was_connected = drone.connected
                 print('Connected.' if was_connected else 'Connection lost, reconnecting...')
 
-            # Pencere odakta değilse drone dursun (başka pencerede yazarken uçmasın).
+            # Stop the drone if the window is not focused (so it does not fly while typing in another window).
             if pygame.key.get_focused():
                 drone.set_sticks(*sticks_from_keys(pygame.key.get_pressed(), speeds))
             else:
                 drone.set_sticks(0, 0, 0, 0)
 
-            # Yeni kare geldiyse resme çevir (BGR -> RGB).
+            # If a new frame has arrived, convert it to a picture (BGR -> RGB).
             frame = drone.frame
             if frame is not None and frame is not last_frame:
                 last_frame = frame

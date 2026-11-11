@@ -1,0 +1,15 @@
+tellolink
+Copyright 2026 batoddy
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes protocol logic and CRC tables derived from TelloPy
+(https://github.com/hanyazou/TelloPy), Copyright 2018 Hanyazou, licensed under
+the Apache License, Version 2.0.
+
+Changes from TelloPy: the library was rewritten as a smaller package. The
+packet and log-record decoding was reimplemented and extended (additional
+flight-log records decoded, field names and units corrected from real flight
+recordings), several defects found in TelloPy were fixed, the event and video
+handling were redesigned, and features outside the library's scope were left
+out. TelloPy's source code is not included.

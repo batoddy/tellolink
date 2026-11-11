@@ -1,15 +1,19 @@
-"""Tello paketlerini kurma ve çözme. Soket ve thread yok; yalnızca baytlar.
+# Copyright 2026 batoddy
+# Licensed under the Apache License, Version 2.0 (see LICENSE).
+# Protocol logic and CRC tables derived from TelloPy (https://github.com/hanyazou/TelloPy),
+# Copyright 2018 Hanyazou, Apache License 2.0; rewritten and modified (see NOTICE).
+"""Build and parse Tello packets. No sockets or threads; bytes only.
 
-Byte konumları ve birimler TELLO_VERI_RAPORU.md'den.
-Eksenler: hız ve konum alanları (status, imu.vel, lin_acc, mvo, nav, osd) DÜNYA ekseninde: x = yaw 0° yönü,
-y = yaw +90° yönü, z aşağı. Gövdeye göre değildir; drone dönünce ileri hızı x'ten y'ye geçer.
-Ham acc_* ve gyro_* gövde ekseninde.
+Byte offsets and units are from TELLO_VERI_RAPORU.md.
+Axes: velocity and position fields (status, imu.vel, lin_acc, mvo, nav, osd) are in the WORLD frame: x = yaw 0° direction,
+y = yaw +90° direction, z down. Not body-relative; when the drone turns, forward speed moves from x to y.
+Raw acc_* and gyro_* are in the body frame.
 """
 import datetime
 import struct
 from dataclasses import dataclass
 
-# Mesaj kodları
+# Message codes
 WIFI_MSG = 0x001A
 SSID_CMD = 0x0012
 SSID_PASSWORD_CMD = 0x0014
@@ -29,12 +33,12 @@ LOW_BAT_THRESHOLD_CMD = 0x1055
 ALT_LIMIT_MSG = 0x1056
 LOW_BAT_THRESHOLD_MSG = 0x1057
 
-# Bağlantı isteği: "conn_req:" + 9617 (BCD). TelloPy ile aynı.
+# Connection request: "conn_req:" + 9617 (BCD). Same as TelloPy.
 CONN_REQ = b'conn_req:\x96\x17'
 CONN_ACK = b'conn_ack:'
 EMERGENCY = b'emergency'
 
-# Takla yönleri (TelloPy ve Go sürücüsüyle aynı numaralar)
+# Flip directions (same numbers as TelloPy and the Go driver)
 FLIP_DIRECTIONS = {'forward': 0, 'left': 1, 'back': 2, 'right': 3,
                    'forward_left': 4, 'back_left': 5, 'back_right': 6, 'forward_right': 7}
 
@@ -111,10 +115,10 @@ def crc16(buf):
 
 
 # ---------------------------------------------------------------------------
-# Giden paketler
+# Outgoing packets
 # ---------------------------------------------------------------------------
 def build_packet(cmd, pkt_type, payload=b'', seq=0):
-    """0xCC | uzunluk<<3 (2 byte) | crc8 | tip | komut (2) | sıra no (2) | içerik | crc16 (2)."""
+    """0xCC | length<<3 (2 bytes) | crc8 | type | command (2) | sequence no. (2) | payload | crc16 (2)."""
     buf = bytearray([0xcc, 0, 0, 0, pkt_type, cmd & 0xff, (cmd >> 8) & 0xff, seq & 0xff, (seq >> 8) & 0xff])
     buf += payload
     size = (len(buf) + 2) << 3
@@ -125,7 +129,7 @@ def build_packet(cmd, pkt_type, payload=b'', seq=0):
 
 
 def time_bytes(now=None):
-    """Saat, dakika, saniye, ms'nin alt ve üst byte'ı; her biri 2 byte (TelloPy add_time ile aynı)."""
+    """Hour, minute, second, ms low and high byte; 2 bytes each (same as TelloPy add_time)."""
     if now is None:
         now = datetime.datetime.now()
     ms = now.microsecond // 1000
@@ -133,17 +137,17 @@ def time_bytes(now=None):
 
 
 def stick_bytes(roll, pitch, throttle, yaw):
-    """Dört eksen (−1…1), her biri 11 bit, 6 byte'a paketlenir. Hızlı mod biti (44) hep 0."""
+    """Four axes (−1…1), 11 bits each, packed into 6 bytes. Fast-mode bit (44) always 0."""
     a = [int(1024 + 660.0 * v) & 0x7ff for v in (roll, pitch, throttle, yaw)]
     packed = a[0] | (a[1] << 11) | (a[2] << 22) | (a[3] << 33)
     return packed.to_bytes(8, 'little')[:6]
 
 
 # ---------------------------------------------------------------------------
-# Gelen paketler
+# Incoming packets
 # ---------------------------------------------------------------------------
 def check_packet(data):
-    """Uzunluk alanı, başlık crc8'i ve sondaki crc16 doğru mu?"""
+    """Are the length field, header crc8 and trailing crc16 correct?"""
     return (len(data) >= 11 and data[0] == 0xcc
             and (data[1] | (data[2] << 8)) >> 3 == len(data)
             and crc8(data[0:3]) == data[3]
@@ -151,7 +155,7 @@ def check_packet(data):
 
 
 # ---------------------------------------------------------------------------
-# Kayıtlar. Ortak alanlar: recv_time (time.monotonic, paketin varışı), tick (drone sayacı).
+# Records. Common fields: recv_time (time.monotonic, packet arrival), tick (drone counter).
 # ---------------------------------------------------------------------------
 @dataclass
 class Record:
@@ -161,19 +165,19 @@ class Record:
 
 @dataclass
 class Status(Record):
-    """Uçuş durumu (mesaj 0x0056, 10 Hz). tick yok."""
-    height: float               # m (telde dm)
-    vel_x: float                # m/s, dünya x (yaw 0° yönü) (telde dm/s; TelloPy: north_speed)
-    vel_y: float                # m/s, dünya y (yaw +90° yönü) (TelloPy: east_speed)
-    vel_z: float                # m/s, aşağı + (TelloPy: ground_speed)
-    fly_time: float             # s, yalnızca havada artar (telde 0.1 s)
+    """Flight status (message 0x0056, 10 Hz). No tick."""
+    height: float               # m (dm on the wire)
+    vel_x: float                # m/s, world x (yaw 0° direction) (dm/s on the wire; TelloPy: north_speed)
+    vel_y: float                # m/s, world y (yaw +90° direction) (TelloPy: east_speed)
+    vel_z: float                # m/s, positive down (TelloPy: ground_speed)
+    fly_time: float             # s, increases only while airborne (0.1 s on the wire)
     battery_percent: int
-    battery_voltage: float      # V (telde mV; TelloPy: drone_fly_time_left)
-    battery_left: int           # anlamı bilinmiyor, hep 0 (TelloPy: drone_battery_left)
-    fly_mode: int               # 6 yerde/havada sabit, 11 kalkış, 12 iniş
-    em_sky: bool                # havada
-    em_ground: bool             # yalnızca kalkışta motorlar dönmeye başlarken ~0.5 s; "yerde" DEĞİL
-    em_open: bool               # motorlar dönüyor
+    battery_voltage: float      # V (mV on the wire; TelloPy: drone_fly_time_left)
+    battery_left: int           # meaning unknown, always 0 (TelloPy: drone_battery_left)
+    fly_mode: int               # 6 steady on ground/in air, 11 takeoff, 12 landing
+    em_sky: bool                # airborne
+    em_ground: bool             # only ~0.5 s at takeoff while motors spin up; NOT "on the ground"
+    em_open: bool               # motors running
     drone_hover: bool
     outage_recording: bool
     battery_low: bool
@@ -198,32 +202,32 @@ class Status(Record):
 
 @dataclass
 class Wifi(Record):
-    """Wi-Fi mesajı (0x001A, 1 Hz). tick yok."""
-    strength: int               # sinyal gücü
-    disturb: int | None         # parazit (~); mesaj kısaysa None
+    """Wi-Fi message (0x001A, 1 Hz). No tick."""
+    strength: int               # signal strength
+    disturb: int | None         # interference (~); None if the message is short
 
 
 @dataclass
 class Imu(Record):
-    """LogImuAtti, kayıt 2048 (10 Hz)."""
+    """LogImuAtti, record 2048 (10 Hz)."""
     acc_x: float
     acc_y: float
     acc_z: float
     gyro_x: float
     gyro_y: float
     gyro_z: float
-    q0: float                   # kuaterniyon, q0 = w
+    q0: float                   # quaternion, q0 = w
     q1: float
     q2: float
     q3: float
-    lin_acc_x: float            # m/s², dünya ekseninde, yerçekimi çıkarılmış
+    lin_acc_x: float            # m/s², world frame, gravity removed
     lin_acc_y: float
     lin_acc_z: float
     vel_x: float                # m/s (TelloPy: vg_x)
     vel_y: float
     vel_z: float
-    baro_raw: float             # m, ham barometre irtifası (yalnız farkı anlamlı)
-    baro: float                 # m, yumuşatılmış
+    baro_raw: float             # m, raw barometer altitude (only differences are meaningful)
+    baro: float                 # m, smoothed
     gyro_bias_x: float | None
     gyro_bias_y: float | None
     gyro_bias_z: float | None
@@ -232,65 +236,65 @@ class Imu(Record):
 
 @dataclass
 class Gyro(Record):
-    """LogGyro, kayıt 1305 (20 Hz, yalnızca havada). Üç işlem aşaması, her biri (x, y, z)."""
+    """LogGyro, record 1305 (20 Hz, airborne only). Three processing stages, each (x, y, z)."""
     stages: tuple
 
 
 @dataclass
 class Mvo(Record):
-    """LogNewMvoFeedback, kayıt 29 (5 Hz). Optik akış."""
-    vel_x: float                # m/s (telde mm/s)
+    """LogNewMvoFeedback, record 29 (5 Hz). Optical flow."""
+    vel_x: float                # m/s (mm/s on the wire)
     vel_y: float
     vel_z: float
-    pos_x: float                # m; kalkışta sıçrar
+    pos_x: float                # m; jumps at takeoff
     pos_y: float
     pos_z: float
-    height: float | None        # m, yerden
-    flags: int | None           # geçerlilik bitleri
+    height: float | None        # m, above ground
+    flags: int | None           # validity bits
 
 
 @dataclass
 class Tof(Record):
-    """LogTof, kayıt 16 (5 Hz)."""
-    distance: float             # m (telde mm); yerde 0.1
+    """LogTof, record 16 (5 Hz)."""
+    distance: float             # m (mm on the wire); 0.1 on the ground
     flag: int
-    counter: int                # her kayıtta 4 artar
+    counter: int                # increases by 4 per record
 
 
 @dataclass
 class Nav(Record):
-    """LogImuEx, kayıt 2064 (10 Hz). Kalkışta sıçramayan konum."""
+    """LogImuEx, record 2064 (10 Hz). Position that does not jump at takeoff."""
     vel_x: float                # m/s
     vel_y: float
     vel_z: float
     pos_x: float                # m
     pos_y: float
     pos_z: float                # m, −baro
-    tof_vel: float              # m/s, yükselirken −
-    height: float               # m, yerden
+    tof_vel: float              # m/s, − while climbing
+    height: float               # m, above ground
     flags: int
     counter: int
 
 
 @dataclass
 class Osd(Record):
-    """LogOsdGeneral, kayıt 12 (1.7 Hz)."""
+    """LogOsdGeneral, record 12 (1.7 Hz)."""
     height: float               # m
-    vel_x: float                # m/s, 0.1 adımlı
+    vel_x: float                # m/s, 0.1 steps
     vel_y: float
     vel_z: float
-    pitch: float                # derece
+    pitch: float                # degrees
     roll: float
     yaw: float
     fly_mode: int
     tof_height: float           # m
     fly_time: float             # s
-    yaw_rate: float             # derece/s
+    yaw_rate: float             # degrees/s
 
 
 @dataclass
 class Sticks(Record):
-    """LogController, kayıt 1000 (5 Hz). Drone'un gördüğü çubuklar."""
+    """LogController, record 1000 (5 Hz). Sticks as the drone sees them."""
     pitch: float
     roll: float
     yaw: float
@@ -301,7 +305,7 @@ class Sticks(Record):
 
 @dataclass
 class AttitudeTarget(Record):
-    """LogAttitudeControl, kayıt 1304 (2.5 Hz). Radyan."""
+    """LogAttitudeControl, record 1304 (2.5 Hz). Radians."""
     target_yaw: float
     target_roll: float
     target_pitch: float
@@ -312,33 +316,33 @@ class AttitudeTarget(Record):
 
 @dataclass
 class Motors(Record):
-    """LogMotorCtrl, kayıt 1307 (10 Hz). PWM %, sıra: ön sağ, ön sol, arka sol, arka sağ."""
+    """LogMotorCtrl, record 1307 (10 Hz). PWM %, order: front right, front left, rear left, rear right."""
     pwm: tuple
 
 
 @dataclass
 class Battery(Record):
-    """LogBattery, kayıt 1710 (5 Hz)."""
+    """LogBattery, record 1710 (5 Hz)."""
     voltage: float              # V
 
 
 @dataclass
 class UnsolvedRecord(Record):
-    """Anlamı çözülmemiş (ya da çözülemeyecek kadar kısa gelmiş) bir günlük kaydı: id ve ham payload (XOR'u açılmış)."""
+    """A log record whose meaning is not decoded (or that arrived too short to decode): id and raw payload (XOR removed)."""
     record_id: int
     payload: bytes
 
 
 @dataclass
 class Frame(Record):
-    """Çözülmüş video karesi. recv_time: karenin son UDP paketinin varışı. tick yok."""
-    image: object               # numpy dizisi, yükseklik × genişlik × 3, BGR
-    data: bytes                 # karenin ham H.264 baytları
+    """Decoded video frame. recv_time: arrival of the frame's last UDP packet. No tick."""
+    image: object               # numpy array, height × width × 3, BGR
+    data: bytes                 # raw H.264 bytes of the frame
     keyframe: bool
 
 
 def parse_status(payload, recv_time):
-    """Uçuş durumu içeriği (CRC hariç); 24 byte'tan kısaysa None."""
+    """Flight status payload (without CRC); None if shorter than 24 bytes."""
     if len(payload) < 24:
         return None
     height, vx, vy, vz, fly_time = struct.unpack_from('<5h', payload, 0)
@@ -369,7 +373,7 @@ def parse_wifi(payload, recv_time):
     return Wifi(recv_time, None, strength=payload[0], disturb=payload[1] if len(payload) > 1 else None)
 
 
-# Kayıt çözücüleri: (recv_time, tick, payload) -> kayıt
+# Record decoders: (recv_time, tick, payload) -> record
 def _imu(t, tick, d):
     extra = struct.unpack_from('<3f', d, 88) + (struct.unpack_from('<h', d, 106)[0] / 100.0,) \
         if len(d) >= 108 else (None,) * 4
@@ -426,7 +430,7 @@ def _battery(t, tick, d):
     return Battery(t, tick, struct.unpack_from('<f', d, 0)[0] / 1000.0)
 
 
-# kayıt id -> (okuma fonksiyonundaki ad, çözücü)
+# record id -> (field/event name, decoder)
 RECORDS = {
     2048: ('imu', _imu),
     1305: ('gyro', _gyro),
@@ -442,7 +446,7 @@ RECORDS = {
 
 
 def decode_record(record_id, tick, payload, recv_time):
-    """Bilinen bir kaydı çöz; bilinmiyorsa ya da kısa geldiyse None."""
+    """Decode a known record; None if unknown or too short."""
     entry = RECORDS.get(record_id)
     if entry is None:
         return None
@@ -453,18 +457,18 @@ def decode_record(record_id, tick, payload, recv_time):
 
 
 class LogParser:
-    """Günlük mesajlarını (0x1051) kayıtlara böler. TelloPy LogData.update ile aynı mantık.
+    """Splits log messages (0x1051) into records. Same logic as TelloPy LogData.update.
 
-    Kayıt: 0x55 | uzunluk (2) | crc8 | id (2) | tick (4) | payload (tick'in ilk byte'ıyla XOR) | crc16 (2).
-    Drone kayıtları mesaj sınırına bakmadan böler; yarım kalan kayıt bir sonraki mesajla tamamlanır.
+    Record: 0x55 | length (2) | crc8 | id (2) | tick (4) | payload (XOR with the first byte of tick) | crc16 (2).
+    The drone splits records without regard to message boundaries; a partial record is completed by the next message.
     """
     MIN_RECORD = 12
     MAX_RECORD = 4096
 
     def __init__(self):
         self.carry = b''
-        self.crc_errors = 0         # crc16'sı yanlış olduğu için atılan kayıtlar
-        self.skipped_bytes = 0      # sonraki kayıt başını bulmak için atlanan byte'lar
+        self.crc_errors = 0         # records dropped because of a bad crc16
+        self.skipped_bytes = 0      # bytes skipped to find the start of the next record
 
     def _header_at(self, body, pos):
         if body[pos] != 0x55 or crc8(body[pos:pos + 3]) != body[pos + 3]:
@@ -473,7 +477,7 @@ class LogParser:
         return length if self.MIN_RECORD <= length <= self.MAX_RECORD else None
 
     def feed(self, data):
-        """Bir mesajın içeriği (paketin 10. byte'ından CRC'ye kadar). (id, tick, payload) listesi döner."""
+        """Payload of one message (from byte 10 of the packet up to the CRC). Returns a list of (id, tick, payload)."""
         body = self.carry + bytes(data)
         self.carry = b''
         out = []
@@ -507,10 +511,10 @@ class LogParser:
 
 
 class FrameAssembler:
-    """Video UDP paketlerinden kare toplar.
+    """Assembles frames from video UDP packets.
 
-    Paket başlığı: [0] kare sıra no, [1] & 0x7F karedeki paket no, [1] & 0x80 karenin son paketi.
-    Eksik paketli kare atılır; bir sonraki karenin ilk paketinden devam edilir.
+    Packet header: [0] frame sequence no., [1] & 0x7F packet no. within the frame, [1] & 0x80 last packet of the frame.
+    A frame with a missing packet is dropped; assembly resumes from the first packet of the next frame.
     """
 
     def __init__(self):
@@ -519,7 +523,7 @@ class FrameAssembler:
         self.next_index = 0
 
     def add(self, packet, recv_time):
-        """Kare tamamlandıysa (baytlar, recv_time), yoksa None."""
+        """(bytes, recv_time) if a frame is complete, otherwise None."""
         if len(packet) < 2:
             return None
         frame_no, index, last = packet[0], packet[1] & 0x7f, packet[1] & 0x80
@@ -529,7 +533,7 @@ class FrameAssembler:
         elif self.parts is not None and frame_no == self.frame_no and index == self.next_index:
             self.parts.append(packet[2:])
         else:
-            self.parts = None       # kayıp: sonraki karenin başını bekle
+            self.parts = None       # loss: wait for the start of the next frame
             return None
         self.next_index = index + 1
         if last:

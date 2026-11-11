@@ -1,4 +1,6 @@
-"""tellolink: DJI Tello için en alt seviye, sade arayüz. Bkz. README.md."""
+# Copyright 2026 batoddy
+# Licensed under the Apache License, Version 2.0 (see LICENSE).
+"""tellolink: minimal low-level interface for the DJI Tello. See README.md."""
 from .tello import Tello
 from .protocol import (AttitudeTarget, Battery, Frame, Gyro, Imu, Motors, Mvo, Nav, Osd, UnsolvedRecord,
                        Record, Status, Sticks, Tof, Wifi)

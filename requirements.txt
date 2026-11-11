@@ -1,0 +1,6 @@
+# Core: video decoding (H.264) and frames as numpy arrays
+av>=12.0
+numpy>=1.24
+
+# Only for keyboard_control.py (window, video and keyboard)
+pygame>=2.5

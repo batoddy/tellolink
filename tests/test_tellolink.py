@@ -1,7 +1,7 @@
-"""tellolink testleri: kayıtlı iki uçuş TelloPy ile karşılaştırılır, giden baytlar ve video çözme sınanır.
+"""tellolink tests: two recorded flights are compared against TelloPy; outgoing bytes and video decoding are tested.
 
-Çalıştırma (proje kökünde): python -m unittest discover -s tellolink/tests -t .
-Gerçek drone gerekmez; soketler sahte.
+Usage (from the project root): python -m unittest discover -s tellolink/tests -t .
+No real drone needed; the sockets are fake.
 """
 import datetime
 import json
@@ -23,7 +23,7 @@ FIXED_NOW = datetime.datetime(2026, 11, 11, 14, 37, 27, 678901)
 
 
 class FakeSock:
-    """Gönderilenleri biriktirir; hiçbir şey almaz."""
+    """Collects what is sent; receives nothing."""
 
     def __init__(self, *args, **kwargs):
         self.sent = []
@@ -39,7 +39,7 @@ fixed_datetime = types.SimpleNamespace(datetime=types.SimpleNamespace(now=lambda
 
 
 def make_tellopy():
-    """Soketi sahte, thread'leri başlatılmayan bir TelloPy nesnesi."""
+    """A TelloPy object with a fake socket and unstarted threads."""
     import socket
     import tellopy
     from tellopy._internal import tello as tp_tello
@@ -73,7 +73,7 @@ def same(a, b):
     return a == b
 
 
-# yeni alan -> (TelloPy alanı, ölçek): yeni = eski / ölçek
+# new field -> (TelloPy field, scale): new = old / scale
 STATUS_FIELDS = {'height': ('height', 10), 'vel_x': ('north_speed', 10), 'vel_y': ('east_speed', 10),
                  'vel_z': ('ground_speed', 10), 'fly_time': ('fly_time', 10),
                  'battery_percent': ('battery_percentage', 1), 'battery_voltage': ('drone_fly_time_left', 1000),
@@ -86,7 +86,7 @@ KIND_CLASS = {'imu': 'LogImuAtti', 'gyro': 'LogGyro', 'mvo': 'LogNewMvoFeedback'
 
 
 class RecordedFlights(unittest.TestCase):
-    """İki gerçek uçuşun her paketi iki kütüphaneden geçirilir; her alan ve her giden paket karşılaştırılır."""
+    """Every packet of two real flights is fed through both libraries; every field and every outgoing packet is compared."""
 
     def run_flight(self, path):
         import tellopy
@@ -113,7 +113,7 @@ class RecordedFlights(unittest.TestCase):
 
         new = make_tellolink()
         new._state = 'connecting'
-        # Her olayı sırasıyla yakala; olay geldiğinde aynı adlı alana o kaydın yazılmış olması gerekir.
+        # Capture every event in order; when an event arrives, that record must already be written to the field of the same name.
         mine = {kind: [] for kind in ['status', 'wifi', 'unsolved'] + list(KIND_CLASS)}
         def on_event(drone, data, kind):
             if kind == 'unsolved':
@@ -134,13 +134,13 @@ class RecordedFlights(unittest.TestCase):
                 old.unsubscribe(event, handler)
             old.quit()
 
-        # Bütünlük: hiçbir paket ve kayıt CRC'den düşmedi
+        # Integrity: no packet or record failed the CRC
         self.assertEqual(sum(1 for _, d in packets if d[0] == 0xcc and not p.check_packet(d)), 0)
         self.assertEqual(new._log_parser.crc_errors, 0)
         self.assertEqual(new._log_parser.skipped_bytes, 0)
         self.assertEqual(old.log_data.crc_errors, 0)
 
-        # Uçuş durumu
+        # Flight status
         self.assertEqual(len(mine['status']), len(got['status']))
         for a, b in zip(mine['status'], got['status']):
             self.assertEqual(a.recv_time, b.recv_time)
@@ -156,7 +156,7 @@ class RecordedFlights(unittest.TestCase):
         self.assertEqual([(w.recv_time, w.strength, w.disturb) for w in mine['wifi']],
                          [(t, d[0], d[1]) for t, d in got['wifi']])
 
-        # Günlük kayıtları: çözülmeyenler (bilinmeyen id ya da kısa gelen) EVENT_UNSOLVED ile, ham hâliyle
+        # Log records: undecoded ones (unknown id or too short) arrive via EVENT_UNSOLVED, in raw form
         old_records = got['records']
         kind_id = {kind: record_id for record_id, (kind, _) in p.RECORDS.items()}
         solved = {(r.recv_time, r.tick, kind_id[kind]) for kind in KIND_CLASS for r in mine[kind]}
@@ -178,29 +178,29 @@ class RecordedFlights(unittest.TestCase):
                     if field in ('recv_time', 'tick', 'image', 'data'):
                         continue
                     value = getattr(a, field)
-                    if value is None:       # kısa kayıt: TelloPy 0 bırakır
+                    if value is None:       # short record: TelloPy leaves 0
                         continue
                     expected = getattr(b, RENAMED.get((kind, field), field))
                     if (kind, field) in SCALED:
                         expected = expected / SCALED[(kind, field)]
                     self.assertTrue(same(value, expected), '%s.%s: %r != %r' % (kind, field, value, expected))
 
-        # Paketlere tepki olarak gönderilenler (video isteği, saat, günlük onayı) bayt bayt aynı
+        # What is sent in reaction to packets (video request, time, log ack) is identical byte for byte
         self.assertEqual(new._sock.sent, old.sock.sent)
         return len(packets), len(mine['unsolved']), counts, len(new._sock.sent)
 
     def test_flights(self):
         for path in FLIGHTS:
             if not path.exists():
-                self.skipTest('kayit yok: %s' % path)
+                self.skipTest('recording missing: %s' % path)
             with self.subTest(flight=path.parent.name):
                 n_packets, n_records, counts, n_sent = self.run_flight(path)
-                print('\n%s: %d paket, %d kayit, %d giden paket, %s' % (path.parent.name, n_packets, n_records,
+                print('\n%s: %d packets, %d records, %d outgoing packets, %s' % (path.parent.name, n_packets, n_records,
                                                                        n_sent, counts))
 
 
 class SentPackets(unittest.TestCase):
-    """Komutların baytları TelloPy'nin aynı komut için ürettiğiyle aynı mı?"""
+    """Are the command bytes the same as what TelloPy produces for the same command?"""
 
     def test_commands(self):
         old = make_tellopy()
@@ -234,10 +234,10 @@ class SentPackets(unittest.TestCase):
             old.quit()
         self.assertEqual(len(new._sock.sent), len(old.sock.sent))
         for i, (a, b) in enumerate(zip(new._sock.sent, old.sock.sent)):
-            self.assertEqual(a.hex(), b.hex(), 'paket %d' % i)
+            self.assertEqual(a.hex(), b.hex(), 'packet %d' % i)
 
     def call_acked(self, drone, call, feed):
-        """Komutu bir thread'de çağırır; gönderilen paketi drone'un yanıtıymış gibi geri verir."""
+        """Calls the command in a thread; feeds the sent packet back as if it were the drone's reply."""
         sock = drone.sock if hasattr(drone, 'sock') else drone._sock
         n = len(sock.sent)
         t = threading.Thread(target=call)
@@ -247,11 +247,11 @@ class SentPackets(unittest.TestCase):
         feed(sock.sent[-1])
         t.join(5)
         self.assertFalse(t.is_alive())
-        self.assertEqual(len(sock.sent), n + 1)     # tek denemede onaylandı
+        self.assertEqual(len(sock.sent), n + 1)     # acknowledged on the first try
 
 
 def synthetic_tello_frames(n=30, gop=10, width=320, height=240):
-    """libx264 ile kısa bir akış; Tello gibi her NAL (SPS, PPS, dilim) ayrı kare. (baytlar, renk) listesi."""
+    """A short stream made with libx264; like the Tello, each NAL (SPS, PPS, slice) is a separate frame. List of (bytes, color)."""
     import av
     import numpy as np
     from fractions import Fraction
@@ -268,7 +268,7 @@ def synthetic_tello_frames(n=30, gop=10, width=320, height=240):
             color = ((i * 37) % 200 + 20, (i * 71) % 200 + 20, (i * 113) % 200 + 20)   # B, G, R
             img = np.empty((height, width, 3), np.uint8)
             img[:] = color
-            img[:40] = rng.integers(0, 255, (40, width, 3), dtype=np.uint8)            # kareyi büyütmek için gürültü
+            img[:40] = rng.integers(0, 255, (40, width, 3), dtype=np.uint8)            # noise to enlarge the frame
             frame = av.VideoFrame.from_ndarray(img, format='bgr24')
             frame.pts = i
             packets = enc.encode(frame)
@@ -286,7 +286,7 @@ def synthetic_tello_frames(n=30, gop=10, width=320, height=240):
 
 
 def to_udp(frames):
-    """Kareleri Tello video paketlerine böler: [kare no, paket no | 0x80 son paket] + en çok 1460 byte."""
+    """Splits frames into Tello video packets: [frame no, packet no | 0x80 last packet] + at most 1460 bytes."""
     packets = []
     for no, (data, _) in enumerate(frames):
         chunks = [data[i:i + 1460] for i in range(0, len(data), 1460)]
@@ -296,7 +296,7 @@ def to_udp(frames):
 
 
 class Video(unittest.TestCase):
-    """Sentetik H.264 akışı Tello paketlerine bölünüp çözücüden geçirilir."""
+    """A synthetic H.264 stream is split into Tello packets and passed through the decoder."""
 
     def decode(self, packets):
         drone = Tello()
@@ -315,12 +315,12 @@ class Video(unittest.TestCase):
         pictures = [i for i, (_, pts) in enumerate(frames) if pts is not None]
         self.assertEqual(len(pictures), 30)
         udp = to_udp(frames)
-        self.assertGreater(len(udp), len(frames))      # çok paketli kareler var
+        self.assertGreater(len(udp), len(frames))      # there are multi-packet frames
         decoded = self.decode([(1000.0 + no, pkt) for no, _, pkt in udp])
         self.assertEqual(len(decoded), 30)
         for f, idx in zip(decoded, pictures):
             data, pts = frames[idx]
-            self.assertEqual(f.recv_time, 1000.0 + idx)     # karenin kendi baytlarının varışı
+            self.assertEqual(f.recv_time, 1000.0 + idx)     # arrival of the frame's own bytes
             self.assertEqual(f.data, data)
             self.assertIsNone(f.tick)
             self.assertEqual(f.image.shape, (240, 320, 3))
@@ -333,15 +333,15 @@ class Video(unittest.TestCase):
         frames = synthetic_tello_frames()
         udp = to_udp(frames)
         pictures = [i for i, (_, pts) in enumerate(frames) if pts is not None]
-        start = pictures[1]                     # ilk anahtar kareden ve SPS/PPS'ten sonra başla
-        lost = pictures[15]                     # bu karenin bir paketi kaybolsun
+        start = pictures[1]                     # start after the first keyframe and the SPS/PPS
+        lost = pictures[15]                     # lose one packet of this frame
         lost_chunks = [i for no, i, _ in udp if no == lost]
         self.assertGreater(len(lost_chunks), 1)
         packets = [(1000.0 + no, pkt) for no, i, pkt in udp if no >= start and not (no == lost and i == 1)]
         decoded = self.decode(packets)
         times = [f.recv_time for f in decoded]
-        self.assertNotIn(1000.0 + lost, times)           # eksik kare verilmez
-        self.assertEqual(times[0], 1000.0 + pictures[10])  # ilk anahtar kareye kadar hiçbir şey çıkmaz
+        self.assertNotIn(1000.0 + lost, times)           # a frame with a missing packet is not delivered
+        self.assertEqual(times[0], 1000.0 + pictures[10])  # nothing is output until the first keyframe
         self.assertTrue(decoded[0].keyframe)
         self.assertEqual(len(decoded), 30 - 10 - 1)
 

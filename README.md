@@ -2,7 +2,7 @@
 
 DJI Tello drone'u Python'dan kullanmak için küçük bir kütüphane. Drone'a bağlanır, kalkış/iniş ve hareket komutlarını gönderir, drone'un gönderdiği bütün verileri (kamera görüntüsü, IMU, yükseklik, hız, konum, pil, motorlar…) okunabilir hâle getirir.
 
-Neden var: Tello'nun resmî SDK'sı yalnızca birkaç temel veri verir. Telefon uygulamasının konuştuğu iç protokolde ise drone'un kendi uçuş günlüğü de akar: 10 Hz IMU, alt kameradan optik akış ile konum ve hız, motor değerleri ve daha fazlası. `tellolink` bu protokolü konuşur. Protokol mantığı [TelloPy](https://github.com/hanyazou/TelloPy)'den alındı; veri alanlarının anlamları gerçek uçuş kayıtlarıyla çözüldü.
+Tello'nun resmî SDK'sı yalnızca birkaç temel veri verir. Telefon uygulamasının konuştuğu iç protokolde ise drone'un kendi uçuş günlüğü de akar: 10 Hz IMU, alt kameradan optik akış ile konum ve hız, motor değerleri ve daha fazlası. `tellolink` bu protokolü konuşur. Nereden geldiği ve TelloPy'den farkı için bkz. [Hakkında](#hakkında).
 
 ## İçindekiler
 
@@ -17,13 +17,15 @@ Neden var: Tello'nun resmî SDK'sı yalnızca birkaç temel veri verir. Telefon 
 9. [Birden çok drone](#9-birden-çok-drone)
 10. [Güvenlik](#10-güvenlik)
 11. [Bilinen sınırlar](#11-bilinen-sınırlar)
+12. [Hakkında](#hakkında)
+13. [Lisans](#lisans)
 
 ## 1. Kurulum
 
 Python 3.10 veya üstü gerekir.
 
 ```
-pip install av numpy pygame
+pip install -r requirements.txt
 ```
 
 - `av`: drone'un H.264 görüntüsünü çözer.
@@ -247,12 +249,39 @@ Adaptörün adresini Windows'ta `ipconfig`, Linux'ta `ip addr` ile görebilirsin
 
 ## 11. Bilinen sınırlar
 
-- **Henüz gerçek drone ile denenmedi.** Veri çözme iki gerçek uçuşun kayıtlarıyla, gönderilen komutlar TelloPy'nin ürettiği baytlarla, görüntü çözme yapay bir video ile test edildi.
+- **Az denendi.** Gerçek drone ile bir yer + eksen uçuşu yapıldı (bağlantı, görüntü, bütün veriler ve her eksen doğrulandı). Takla, Wi-Fi ayarları ve birden çok drone gerçek drone ile henüz denenmedi.
 - Zaman düzeltmesi yapılmaz; `recv_time` ve `tick` ham olarak verilir.
 - Kayıplı kareler atlanır; Wi-Fi'da paket kaybı olursa görüntü bir sonraki anahtar kareye kadar donabilir.
 - Işık seviyesi verisi okunmaz (bu firmware'de hep 0 geliyordu).
 - Bazı günlük kayıtlarının anlamı bilinmiyor; bunlar `EVENT_UNSOLVED` / `drone.unsolved` ile ham hâliyle verilir.
 
-Testler (drone gerekmez): `python -m unittest discover -s tellolink/tests -t .`
+Testler (drone gerekmez): `python -m unittest discover -s tellolink/tests -t .`. Testler, geliştirme sırasında alınan uçuş kayıtlarını ve karşılaştırma için TelloPy'yi kullanır; kayıtlar bu repoda yoktur.
 
-Lisans: Protokol kodu TelloPy'den (Hanyazou, Apache 2.0) türetilmiştir.
+## Hakkında
+
+`tellolink`, [TelloPy](https://github.com/hanyazou/TelloPy)'nin çözümleme yolundan yola çıkılarak yazıldı. Bir kapalı alan keşfi projesinde TelloPy ile Tello'nun uçuş günlüğünü okurken bazı hatalar ve eksikler bulduk. Bunları TelloPy'de düzeltirken, yalnızca ihtiyaç duyulan kısımları kapsayan daha sade ve anlaşılır bir paketin daha kullanışlı olacağına karar verdik.
+
+**Kullandığımız TelloPy sürümünde bulunan ve burada olmayan sorunlar** (kod okunarak ve gerçek uçuş kayıtlarıyla bulundu):
+
+- 16 bitlik işaretli sayılar 256'nın üstünde bozuluyordu; yükseklik, hız, uçuş süresi ve pil gerilimi yanlış okunuyordu.
+- İki UDP paketine bölünen günlük kayıtları kayboluyor, ardından gelen paketin tamamı da atılıyordu (paketlerin ~%2'si).
+- Paket ve kayıt CRC'leri hiç kontrol edilmiyordu.
+- Drone'a gönderilen paketlerdeki saat, programın açıldığı anda donup kalıyordu.
+- Drone'un saat isteklerine yanıt verilmiyordu.
+- MVO (optik akış) hızı 10 kat büyük çıkıyordu.
+- Bağlantı koptuktan sonra görüntü geri gelmiyordu.
+- Bazı alan adları yanıltıcıydı: örneğin pil gerilimi `drone_fly_time_left` adıyla geliyordu.
+
+**tellolink'in yaptıkları:**
+
+- Uçuş günlüğünden 10 kayıt türünü çözer. TelloPy yalnızca birkaçını (IMU, MVO) çözüyordu; motorlar, pil gerilimi, drone'un kendi konum kestirimi, çubuklar gibi kayıtlar gerçek uçuşlarla çözüldü. Alan adları, birimler ve eksenler ölçümlerle doğrulandı.
+- Yalnızca bağlantı, uçuş komutları, temel ayarlar, telemetri ve görüntü vardır. Kayıt araçları, örnek programlar gibi kapsam dışı kısımlar alınmadı.
+- Her veri hem nesnenin içinde son değer olarak durur, hem de kendi olayıyla gelir.
+- Görüntü kütüphanenin içinde çözülür ve her kare kendi varış zamanını taşır.
+- Bağımlılık olarak yalnızca `av` ve `numpy` gerekir.
+
+**Teşekkür:** Bu kütüphane, TelloPy'yi geliştiren [Hanyazou](https://github.com/hanyazou)'ya ve TelloPy'ye katkıda bulunan herkese çok şey borçlu. Tello'nun belgelenmemiş protokolünü çözüp açık kaynak olarak paylaşmasalardı bu çalışma mümkün olmazdı. Protokol bilgisinin bir kısmı ayrıca [TelloLib](https://github.com/Kragrathea/TelloLib), [SMerrony/tello](https://github.com/SMerrony/tello) ve DJI uçuş kayıtları için yazılmış DatCon projelerinden geliyor; emeği geçen herkese teşekkürler.
+
+## Lisans
+
+[Apache License 2.0](LICENSE). Protokol mantığı ve CRC tabloları TelloPy'den (Copyright 2018 Hanyazou, Apache 2.0) türetilmiştir; ayrıntılar [NOTICE](NOTICE) dosyasında.
